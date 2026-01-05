@@ -1,0 +1,986 @@
+local dynamic_client = {
+    combat = {
+        force_sprinting = false,
+        force_no_swimming = false,
+        hitbox_expander = false,
+        hitbox_X = 8,
+        hitbox_Y = 8,
+        hitbox_Z = 8,
+        transparency = 0.5,
+        nbd_bypass = false,
+        silent_aim = false,
+        draw_fov = false,
+        fov_radius = 100,
+        draw_snapline = false,
+        fov_color = Color3.fromRGB(255, 255, 255),
+        snapline_color = Color3.fromRGB(255, 255, 255),
+        no_recoil = false,
+        no_spread = false,
+        no_sway = false,
+        jumpshoot = false,
+        drill_no_cooldown = false,
+    },
+    visuals = {
+        esp_enabled = false,
+        show_corner_box = false,
+        show_name = false,
+        sleep_check = false,
+        show_distance = false,
+        max_distance = 3000,
+        show_weapon = false,
+        ore_esp_enabled = false,
+        ore_max_distance = 1000,
+        show_corpses = false,
+        corpses_colour = Color3.fromRGB(255, 255, 255),
+        colors = {
+            corner_box_color = Color3.fromRGB(255, 255, 255),
+            weapon_color = Color3.fromRGB(255, 255, 255),
+            dist_color = Color3.fromRGB(255, 255, 255),
+            name_color = Color3.fromRGB(255, 255, 255),
+            ore_name_color = Color3.fromRGB(255, 255, 255)
+        },
+        custom_ambience = false,
+        ambience_color = Color3.fromRGB(255, 255, 255),
+        no_fog = false,
+        no_shadow = false,
+        no_colorshift = false,
+    },
+    misc = {
+        change_field_of_view = false,
+        fov_val = 70,
+        chat_spam = false,
+        crosshair = false,
+    }
+}
+
+local character_cache       = {}
+local Cache                 = {}
+
+local Run_service           = cloneref(game:GetService("RunService"))
+local Replicated_storage    = cloneref(game:GetService("ReplicatedStorage"))
+local Players               = cloneref(game:GetService("Players"))
+local Camera                = game:GetService("Workspace").CurrentCamera
+local Lighting              = game:GetService("Lighting")
+local LocalPlayer           = Players.LocalPlayer
+
+local Classes               = getrenv()._G.classes
+local Camera_client         = Classes.Camera
+local Character             = Classes.Character
+local Fps_client            = Classes.FPS
+local old_get_cframe        = Camera_client.GetCFrame
+local tcp                   = Players.LocalPlayer:FindFirstChild("TCP")
+local PlrModel              = Replicated_storage.Shared.entities.Player.Model
+local Ignore_folder         = Workspace:WaitForChild("Const"):WaitForChild("Ignore")
+local fps_arms              = Ignore_folder:WaitForChild("FPSArms")
+local gun_model             = fps_arms:FindFirstChild("HandModel")
+
+local ambientFunc           = { TimeOfDay = Lighting.TimeOfDay, Ambient = Lighting.Ambient, GlobalShadows = Lighting.GlobalShadows, ColorShift_Top = Lighting.ColorShift_Top, ColorShift_Bottom = Lighting.ColorShift_Bottom, FogEnd = Lighting.FogEnd, FogStart = Lighting.FogStart, FogColor = Lighting.FogColor }
+local fovFunc               = { FieldOfView = Camera.FieldOfView }
+local modules               = {["PlayerClient"] = {}, ["Character"] = {}}
+
+local msg= {
+    "get dynamic cilent L",
+    "beamed by dynamic cilent",
+    "get good, get dynamic cilent",
+    "be the best, get dynamic cilent",
+    ".gg/DpgMKXXWc2"
+}
+
+local validCharacters, originalHeadSizes = {}, {}
+local hitboxConn
+
+local function isCharacterModel(m)
+    return typeof(m) == "Instance" and m:IsA("Model") and (m:FindFirstChild("Head") or m:FindFirstChild("LowerTorso"))
+end
+
+local function addToVC(obj)
+    if isCharacterModel(obj) then
+        validCharacters[obj] = true
+        local head = obj:FindFirstChild("Head")
+        if head and head:IsA("BasePart") and not originalHeadSizes[head] then
+            originalHeadSizes[head] = head.Size
+        end
+        obj.ChildAdded:Connect(function(c)
+            if c.Name == "Head" and c:IsA("BasePart") and not originalHeadSizes[c] then
+                originalHeadSizes[c] = c.Size
+            end
+        end)
+    end
+end
+
+local function removeFromVC(obj)
+    validCharacters[obj] = nil
+end
+
+for _, v in ipairs(workspace:GetChildren()) do
+    addToVC(v)
+end
+
+workspace.ChildAdded:Connect(addToVC)
+workspace.ChildRemoved:Connect(removeFromVC)
+
+local function applyHitboxOnce()
+    local cfg = dynamic_client.combat
+    local newSize = Vector3.new(cfg.hitbox_X, cfg.hitbox_Y, cfg.hitbox_Z)
+    for model, _ in pairs(validCharacters) do
+        local head = model:FindFirstChild("Head")
+        if head then
+            if not originalHeadSizes[head] then
+                originalHeadSizes[head] = head.Size
+            end
+            head.Size = newSize
+            head.Transparency = cfg.transparency
+            head.CanCollide = false
+        end
+    end
+end
+
+local function restoreHitbox()
+    for head, orig in pairs(originalHeadSizes) do
+        if head and head.Parent then
+            head.Size = orig
+            head.Transparency = 0
+        end
+    end
+end
+
+local function setHitboxEnabled(value)
+    dynamic_client.combat.hitbox_expander = value
+    if hitboxConn then
+        hitboxConn:Disconnect()
+        hitboxConn = nil
+    end
+    if value then
+        hitboxConn = Run_service.Heartbeat:Connect(applyHitboxOnce)
+    else
+        restoreHitbox()
+    end
+end
+
+local camera = workspace.CurrentCamera
+local screenCenter = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
+
+local function GetProjectileInfo()
+    local item = charlist.GetEquippedItem()
+    return (item and item.ProjectileSpeed or 0), (item and item.ProjectileDrop or 0)
+end
+
+local function Predict(origin, targetPos, speed, drop)
+    local delta = targetPos - origin
+    local dist = delta.Magnitude
+    local t = dist / speed
+    local grav = 0.5 * drop * t * t
+    return Vector3.new(targetPos.X, targetPos.Y - grav, targetPos.Z)
+end
+
+local function FindClosestTarget()
+    local closest, minDist = nil, math.huge
+    for _, pl in pairs(PlayerList) do
+        if pl.pos and pl.model and pl.model:FindFirstChild("Head") and not pl.sleeping then
+            local headPos = pl.model.Head.Position
+            local scr, onScreen = camera:WorldToScreenPoint(headPos)
+            if onScreen then
+                local dist = (Vector2.new(scr.X, scr.Y) - screenCenter).Magnitude
+                if dist < minDist then
+                    minDist, closest = dist, pl
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local __namecall
+__namecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if method ~= "FireServer" then return __namecall(self, ...) end
+    local args = {...}
+    local eventId = args[2]
+    if nbd_bypass and eventId == 10 then
+        if args[3] == "Hit" and (args[7] == "Torso" or args[7] == "Head") then
+            args[7] = "Head"
+            args[8] = Vector3.zero
+        elseif args[3] == "Fire" then
+            local target = FindClosestTarget()
+            if target and target.model and target.model.Head then
+                local speed, drop = GetProjectileInfo()
+                args[4] = CFrame.lookAt(args[4].p, Predict(args[4].p, target.model.Head.Position, speed, drop))
+            end
+        end
+    end
+    return __namecall(self, unpack(args))
+end))
+
+local ESPObjects = {}
+local Camera = workspace.CurrentCamera
+local RunService = game:GetService("RunService")
+
+local function Create(class, properties)
+    local obj = Drawing.new(class)
+    for prop, value in pairs(properties) do
+        obj[prop] = value
+    end
+    return obj
+end
+
+local function createESP(part, oreName)
+    local drawing = Create("Text", {
+        Text = oreName,
+        Size = 14,
+        Center = true,
+        Outline = true,
+        Color = dynamic_client and dynamic_client.visuals and dynamic_client.visuals.colors.ore_name_color or Color3.new(1,1,1),
+        Visible = false
+    })
+    ESPObjects[part] = {drawing = drawing, oreName = oreName}
+end
+
+local function updateESP()
+    if not dynamic_client or not dynamic_client.visuals then return end
+    for part, data in pairs(ESPObjects) do
+        local drawing = data.drawing
+        if not dynamic_client.visuals.ore_esp_enabled or not part or not part.Parent then
+            drawing.Visible = false
+        else
+            local partPos = part.Position
+            local vector, onScreen = Camera:WorldToViewportPoint(partPos)
+            local distance = (Camera.CFrame.Position - partPos).Magnitude
+            if onScreen and distance <= (dynamic_client.visuals.ore_max_distance or 1000) then
+                local text = ""
+                if dynamic_client.visuals.show_name then
+                    text = "[" .. data.oreName .. "]"
+                end
+                if dynamic_client.visuals.show_distance then
+                    text = text .. string.format(" %.0f studs", distance)
+                end
+                drawing.Text = text
+                drawing.Position = Vector2.new(vector.X, vector.Y - 10)
+                drawing.Color = dynamic_client.visuals.colors.ore_name_color
+                drawing.Visible = true
+            else
+                drawing.Visible = false
+            end
+        end
+    end
+end
+
+local function classifyAndAdd(part)
+    if part:IsA("BasePart") then
+        local name
+        local col = part.BrickColor
+        local mat = part.Material
+        if col == BrickColor.new("Flint") and mat == Enum.Material.Limestone then
+            name = "Stone"
+        elseif col == BrickColor.new("Burlap") and mat == Enum.Material.Slate then
+            name = "Iron"
+        elseif col == BrickColor.new("Institutional white") and mat == Enum.Material.Slate then
+            name = "Nitrate"
+        end
+        if name and not ESPObjects[part] then
+            createESP(part, name)
+        end
+    end
+end
+
+for _, part in ipairs(workspace:GetDescendants()) do
+    classifyAndAdd(part)
+end
+
+workspace.DescendantAdded:Connect(classifyAndAdd)
+RunService.RenderStepped:Connect(updateESP)
+
+local Camera = game:GetService("Workspace").CurrentCamera
+local Run_service = game:GetService("RunService")
+local Classes = getrenv()._G.classes
+local Camera_client = Classes.Camera
+local Fps_client = Classes.FPS
+local old_get_cframe = Camera_client.GetCFrame
+
+local fovCircle
+local snapLine
+
+local oldGunValues = {
+    USP9              = {ProjectileSpeed = 600,  ProjectileDrop = 3},
+    Bow               = {ProjectileSpeed = 300,  ProjectileDrop = 3},
+    C9                = {ProjectileSpeed = 600,  ProjectileDrop = 3},
+    SVD               = {ProjectileSpeed = 2000, ProjectileDrop = 1.1},
+    GaussRifle        = {ProjectileSpeed = 3000, ProjectileDrop = 2},
+    UZI               = {ProjectileSpeed = 1000, ProjectileDrop = 3.5},
+    LeverActionRifle  = {ProjectileSpeed = 1200, ProjectileDrop = 1.5},
+    M4A1              = {ProjectileSpeed = 1300, ProjectileDrop = 4},
+    PipePistol        = {ProjectileSpeed = 500,  ProjectileDrop = 3},
+    PipeSMG           = {ProjectileSpeed = 600,  ProjectileDrop = 3},
+    PumpShotgun       = {ProjectileSpeed = 600,  ProjectileDrop = 2},
+    Blunderbuss       = {ProjectileSpeed = 700,  ProjectileDrop = 3},
+    SCAR              = {ProjectileSpeed = 1400, ProjectileDrop = 2},
+    HMAR              = {ProjectileSpeed = 600,  ProjectileDrop = 3},
+    AR15              = {ProjectileSpeed = 1300, ProjectileDrop = 4},
+    EnergyRifle       = {ProjectileSpeed = 1400, ProjectileDrop = 2},
+    Crossbow          = {ProjectileSpeed = 600,  ProjectileDrop = 3}
+}
+
+local validGuns = {
+    AR15=true, C9=true, Crossbow=true, Bow=true, EnergyRifle=true,
+    GaussRifle=true, HMAR=true, KABAR=true, LeverActionRifle=true,
+    M4A1=true, PipePistol=true, PipeSMG=true, PumpShotgun=true,
+    SCAR=true, SVD=true, USP9=true, UZI=true, Blunderbuss=true
+}
+
+local function IsGun(Gun)
+    return validGuns[tostring(Gun)]
+end
+
+local function GetClosestTarget(maxDistance)
+    local closestTarget, targetVelocity, closestDistance = nil, nil, math.huge
+    for i, v in next, Classes.Player.EntityMap do
+        if v.type=="Player" and not v.sleeping and v.model:FindFirstChild("HumanoidRootPart") and v.model:FindFirstChild("Head") then
+            
+            local distanceToPlayer = (v.model.HumanoidRootPart.Position - Camera.CFrame.Position).Magnitude
+            local screenPoint = Camera:WorldToViewportPoint(v.model.Head.Position)
+            local centerScreen = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+            local distanceFromCenter = (Vector2.new(screenPoint.X, screenPoint.Y) - centerScreen).Magnitude
+            
+            if distanceToPlayer <= maxDistance and distanceFromCenter <= dynamic_client.combat.fov_radius and distanceToPlayer < closestDistance then
+                closestTarget = v.model
+                targetVelocity = v.velocityVector
+                closestDistance = distanceToPlayer
+            end
+        end
+    end
+    return closestTarget, targetVelocity
+end
+
+local function CalculateBulletDrop(tPos, tVel, cPos, pSpeed, pDrop)
+    local dTT = (tPos - cPos).Magnitude
+    local tTT = dTT / pSpeed
+    local horizontalVel = Vector3.new(tVel.X,0,tVel.Z) * 7
+    local verticalVel = Vector3.new(0,tVel.Y,0) * 2
+    local adjustedVel = horizontalVel + verticalVel
+    local pTP = tPos + (adjustedVel * tTT)
+    local dP = -pDrop ^ (tTT * pDrop) + 1
+    return pTP - Vector3.new(0,dP,0)
+end
+
+Camera_client.GetCFrame = function()
+    local closest, velocityVector = GetClosestTarget(1000)
+    local equippedData = Fps_client.GetEquippedItem()
+    if dynamic_client.combat.silent_aim and equippedData and closest and closest:FindFirstChild("HumanoidRootPart") and closest:FindFirstChild("Head") and IsGun(equippedData.type) then
+        local itemClass = Classes[equippedData.type] or oldGunValues[equippedData.type]
+        if itemClass then
+            local projectileSpeed = itemClass.ProjectileSpeed or 500
+            local projectileDrop = itemClass.ProjectileDrop or 0.1
+            local headTop = closest.Head.Position + Vector3.new(0, closest.Head.Size.Y/2, 0)
+            local predictedPosition = CalculateBulletDrop(
+                headTop,
+                velocityVector or Vector3.new(0,0,0),
+                Camera.CFrame.Position,
+                projectileSpeed,
+                projectileDrop
+            )
+            return CFrame.new(Camera.CFrame.Position, predictedPosition)
+        end
+    end
+    return old_get_cframe()
+end
+
+Run_service.RenderStepped:Connect(function()
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+
+    if dynamic_client.combat.draw_fov then
+        if not fovCircle then
+            fovCircle = Drawing.new("Circle")
+            fovCircle.Thickness = 1
+            fovCircle.Filled = false
+        end
+        fovCircle.Radius = dynamic_client.combat.fov_radius
+        fovCircle.Position = center
+        fovCircle.Color = dynamic_client.combat.fov_color
+        fovCircle.Visible = true
+    elseif fovCircle then
+        fovCircle.Visible = false
+    end
+
+    local closest, _ = GetClosestTarget(1000)
+
+    if dynamic_client.combat.draw_snapline and closest and closest:FindFirstChild("Head") then
+        if not snapLine then
+            snapLine = Drawing.new("Line")
+            snapLine.Thickness = 1
+        end
+        local headPos = Camera:WorldToViewportPoint(closest.Head.Position)
+        snapLine.From = center
+        snapLine.To = Vector2.new(headPos.X, headPos.Y)
+        snapLine.Color = dynamic_client.combat.snapline_color
+        snapLine.Visible = true
+    elseif snapLine then
+        snapLine.Visible = false
+    end
+end)
+
+local spoofed_ambient2
+spoofed_ambient2 = hookmetamethod(game, "__index", newcclosure(function(self, key)
+    if checkcaller() then
+        return spoofed_ambient2(self, key)
+    end
+    if self == Lighting and ambientFunc[key] ~= nil then
+        return ambientFunc[key]
+    end
+    if self == Camera and fovFunc[key] then
+        return fovFunc[key]
+    end
+    return spoofed_ambient2(self, key)
+end))
+local spoofed_ambient1
+spoofed_ambient1 = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
+    if checkcaller() then
+        return spoofed_ambient1(self, key, value)
+    end
+    if self == Lighting and ambientFunc[key] ~= nil then
+        ambientFunc[key] = value
+        if key == "Ambient" then
+            return spoofed_ambient1(self, key, dynamic_client.visuals.custom_ambience and dynamic_client.visuals.ambience_color or value)
+        elseif key == "GlobalShadows" then
+            return spoofed_ambient1(self, key, dynamic_client.visuals.no_shadows and false or value)
+        elseif key == "ColorShift_Top" or key == "ColorShift_Bottom" then
+            return spoofed_ambient1(self, key, dynamic_client.visuals.no_colorshift and Color3.new(0, 0, 0) or value)
+        elseif key == "FogStart" or key == "FogEnd" then
+            return spoofed_ambient1(self, key, dynamic_client.visuals.no_fog and 1e6 or value)
+        end
+    end
+    if self == Camera and key == "FieldOfView" then
+        fovFunc[key] = value
+        if dynamic_client.misc.change_field_of_view then
+            return spoofed_ambient1(self, key, dynamic_client.misc.fov_val)
+        end
+    end
+    return spoofed_ambient1(self, key, value)
+end))
+task.spawn(function()
+    while true do
+        if dynamic_client.misc.chat_spam then
+            local shitchat = game.TextChatService.TextChannels.RBXGeneral
+            local random = math.random(1, #msg)
+            shitchat:SendAsync(msg[random])
+        end
+        task.wait(12)
+    end
+end)
+local jump_shoot
+jump_shoot = hookfunction(Character.IsGrounded, newcclosure(function(...)
+    if dynamic_client.combat.jumpshoot then
+        return true
+    end
+    return jump_shoot(...)
+end))
+local sprint_hook
+sprint_hook = hookfunction(Character.IsSprinting, newcclosure(function(...)
+    if dynamic_client.combat.force_sprinting then
+        return true
+    end
+    return sprint_hook(...)
+end))
+local swim_hook
+swim_hook = hookfunction(Character.IsSwimming, newcclosure(function(...)
+    if dynamic_client.combat.force_no_swimming then
+        return false
+    end
+    return swim_hook(...)
+end))
+local no_sway
+no_sway = hookfunction(Camera_client.SetSwaySpeed, newcclosure(function(...)
+    if dynamic_client.combat.no_sway then
+        return true
+    end
+    return no_sway(...)
+end))
+local no_spread
+no_spread = hookmetamethod(Random.new(), "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if dynamic_client.combat.no_spread and method == "NextInteger" and debug.info(3, "l") == 283 and debug.info(3, "s"):find("RangedWeaponClient") or sm11spread and method == "NextInteger" and debug.info(3, "l") == 152 and debug.info(3, "s"):find("BowClient") then
+        if getstack(3, 12) == -100 and getstack(3, 13) == 100 then
+            setstack(3, 12, math.random(0, 0))
+            setstack(3, 13, math.random(0, 0))
+        end
+    end
+    return no_spread(self, ...)
+end))
+local no_recoil
+no_recoil = hookfunction(CFrame.new, newcclosure(function(...)
+    if dynamic_client.combat.no_recoil and debug.info(3, "s"):find("Camera") and debug.info(3, "l") == 389 then
+        setstack(3, 1, {cameraXShake = 0, rotSpeed = 0, rotMag = 0, returnTime = 0, push = 0, returnLerp = 0, cameraY = 0, cameraX = 0, lerp = 0})
+    end
+    return no_recoil(...)
+end))
+
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local Camera = Workspace.CurrentCamera
+
+local corpseESP = {}
+
+local function GetCorpses()
+	local Corpses = {}
+	for _, v in ipairs(Workspace:GetChildren()) do
+		local unionOperation = v:FindFirstChildOfClass("UnionOperation")
+		if unionOperation and unionOperation.Color == Color3.fromRGB(205, 205, 205) then
+			table.insert(Corpses, v)
+		end
+	end
+	return Corpses
+end
+
+RunService.RenderStepped:Connect(function()
+	if not dynamic_client.visuals.show_corpses then
+		for _, drawing in pairs(corpseESP) do
+			drawing.Visible = false
+		end
+		return
+	end
+
+	for _, drawing in pairs(corpseESP) do
+		drawing.Visible = false
+	end
+
+	for _, corpse in ipairs(GetCorpses()) do
+		local pos, visible = Camera:WorldToViewportPoint(corpse:GetModelCFrame().Position)
+		if visible then
+			if not corpseESP[corpse] then
+				local text = Drawing.new("Text")
+				text.Center = true
+				text.Outline = true
+				text.Size = 16
+				text.Color = dynamic_client.visuals.corpses_colour
+				text.Text = "Corpse"
+				corpseESP[corpse] = text
+			end
+			corpseESP[corpse].Visible = true
+			corpseESP[corpse].Position = Vector2.new(pos.X, pos.Y - 20)
+		end
+	end
+end)
+local viewport = game:GetService("Workspace").CurrentCamera.ViewportSize
+local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
+
+local centerDot = Drawing.new("Circle")
+centerDot.Visible = true
+centerDot.Color = Color3.fromRGB(255, 255, 255)
+centerDot.Thickness = 1
+centerDot.Filled = true
+centerDot.Radius = 2
+centerDot.Position = center
+
+local fovCircle = Drawing.new("Circle")
+fovCircle.Visible = true
+fovCircle.Color = Color3.fromRGB(255, 255, 255)
+fovCircle.Thickness = 1
+fovCircle.Filled = false
+fovCircle.Radius = 25
+fovCircle.Position = center
+
+
+local repo = 'https://raw.githubusercontent.com/milo22-ux/Linoria-modded-/main/'
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/milo22-ux/Linoria-modded-/refs/heads/main/LinoriaModded.lua", true))()
+local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/milo22-ux/Linoria-modded-/refs/heads/main/ThemeManger.txt.lua",true))()
+local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+local Window = Library:CreateWindow({
+    Title = 'dynamic cilent.xyz',
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8,
+    MenuFadeTime = 0.2
+})
+
+local Tabs = {
+        Combat = Window:AddTab('Combat'),
+        Visuals = Window:AddTab('Visual'),
+        Misc = Window:AddTab('Misc'),
+        Config = Window:AddTab('Settings'),
+}
+
+local Hitbox = Tabs.Combat:AddRightGroupbox('Hitbox')
+local silent = Tabs.Combat:AddLeftGroupbox('Silent aim')
+local Mods = Tabs.Combat:AddRightGroupbox('Mods')
+local esp = Tabs.Visuals:AddLeftGroupbox('Esp')
+local ore = Tabs.Visuals:AddRightGroupbox('Ore Esp')
+local random = Tabs.Visuals:AddRightGroupbox('Random esp')
+local world = Tabs.Visuals:AddRightGroupbox('World')
+local stuff = Tabs.Misc:AddLeftGroupbox('Stuff')
+local Config = Tabs.Config:AddLeftGroupbox('Menu')
+
+
+stuff:AddToggle('CrosshairToggle', {
+    Text = 'Crosshair',
+    Default = dynamic_client.misc.crosshair,
+    Callback = function(Value)
+        dynamic_client.misc.crosshair = Value
+        centerDot.Visible = Value
+        fovCircle.Visible = Value
+    end
+})
+Toggles.CrosshairToggle:SetValue(dynamic_client.visuals.crosshair)
+random:AddToggle('show_corpses', {
+	Text = 'Show corpses',
+	Default = false,
+	Tooltip = '',
+	Callback = function(Value)
+		dynamic_client.visuals.show_corpses = Value
+	end
+})
+random:AddLabel('corpses colour'):AddColorPicker('CorpseColourPicker', {
+	Default = dynamic_client.visuals.corpses_colour,
+	Title = 'Corpses Color',
+	Transparency = 0,
+	Callback = function(Value)
+		dynamic_client.visuals.corpses_colour = Value
+	end
+})
+
+stuff:AddToggle('field_of_view', {
+    Text = 'Field of View',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.misc.change_field_of_view = Value
+         end
+})
+stuff:AddSlider('field_of view', {
+    Text = 'Field of view',
+    Default = 70,
+    Min = 70,
+    Max = 120,
+    Rounding = 1,
+    Compact = false,
+    Callback = function(Value)
+        dynamic_client.misc.fov_val = Value
+         end
+})
+stuff:AddToggle('chat_spam', {
+    Text = 'Chat Spam',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.misc.chat_spam = Value
+         end
+})
+local ambient = world:AddToggle('ambient', {
+    Text = 'Ambient',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.visuals.custom_ambience = Value
+         end
+})
+world:AddToggle('no_fog', {
+    Text = 'No fog',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.visuals.no_fog = Value
+         end
+})
+world:AddToggle('no_shadow', {
+    Text = 'No shadow',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.visuals.no_shadow = Value
+         end
+})
+world:AddToggle('no_colorshift', {
+    Text = 'No colorshift',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.visuals.no_colorshift = Value
+         end
+})
+ambient:AddColorPicker('ColorPicker', { Default = Color3.new(1, 1, 1), Title = '', Transparency = 0, Callback = function(Value) dynamic_client.visuals.ambience_color = Value end })
+local ESPButton = esp:AddButton({
+    Text = 'esp',
+    Func = function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/ogblkee/tridentesp/refs/heads/main/Main.lua", true))()
+    end,
+    DoubleClick = false,
+    Tooltip = 'Loads ESP'
+})
+Mods:AddToggle('no_recoil', {
+    Text = 'No recoil',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.combat.no_recoil = Value
+         end
+})
+
+Mods:AddToggle('force_sprinting', {
+    Text = 'Always Sprint (force IsSprinting=true)',
+    Default = false,
+    Callback = function(Value)
+        dynamic_client.combat.force_sprinting = Value
+    end
+})
+
+Mods:AddToggle('force_no_swimming', {
+    Text = 'Disable Swimming (force IsSwimming=false)',
+    Default = false,
+    Callback = function(Value)
+        dynamic_client.combat.force_no_swimming = Value
+    end
+})
+Mods:AddToggle('no_spread', {
+    Text = 'No spread',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.combat.no_spread = Value
+         end
+})
+Mods:AddToggle('jump_shoot', {
+    Text = 'Jumpshoot',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.combat.jumpshoot = Value
+         end
+})
+Mods:AddToggle('No_sway', {
+    Text = 'No sway',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.combat.no_sway = Value
+         end
+})
+Mods:AddToggle('drill', {
+    Text = 'No drill cooldown',
+    Default = false,
+    Callback = function(Value)
+        dynamic_client.combat.drill_no_cooldown = Value
+        for _, v in getgc(true) do
+            if type(v) == "table" and rawget(v, "type") == "MiningDrill" then
+                v.AttackCooldown = Value and 0 or 0.15
+            end
+        end
+    end
+})
+silent:AddToggle('silent_aim', {
+    Text = 'Silent aim',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.combat.silent_aim = Value
+    end
+})
+
+local fov = silent:AddToggle('draw_fov', {
+    Text = 'Draw fov',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.combat.draw_fov = Value
+    end
+})
+
+silent:AddSlider('fov_radius', {
+    Text = 'Fov radius',
+    Default = 100,
+    Min = 1,
+    Max = 1000,
+    Rounding = 1,
+    Compact = false,
+    Callback = function(Value)
+        dynamic_client.combat.fov_radius = Value
+    end
+})
+
+fov:AddColorPicker('ColorPicker', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Title = '',
+    Transparency = 0,
+    Callback = function(Value)
+        dynamic_client.combat.fov_color = Value
+    end
+})
+
+local snapline = silent:AddToggle('draw_snapline', {
+    Text = 'Draw snapline',
+    Default = false,
+    Tooltip = '',
+    Callback = function(Value)
+        dynamic_client.combat.draw_snapline = Value
+    end
+})
+
+snapline:AddColorPicker('ColorPicker', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Title = '',
+    Transparency = 0,
+    Callback = function(Value)
+        dynamic_client.combat.snapline_color = Value
+    end
+})
+
+ore:AddLabel('Ore Name Color'):AddColorPicker('OreNameColor', {
+    Default = dynamic_client.visuals.colors.ore_name_color,
+    Title = 'Ore Name Color',
+    Callback = function(Value)
+        dynamic_client.visuals.colors.ore_name_color = Value
+        for _, data in pairs(ESPObjects) do
+            data.drawing.Color = Value
+        end
+    end
+})
+ore:AddToggle('OreESPEnabled', {
+    Text = 'Enable Ore ESP',
+    Default = dynamic_client.visuals.ore_esp_enabled,
+    Callback = function(Value)
+        dynamic_client.visuals.ore_esp_enabled = Value
+    end
+})
+
+ore:AddToggle('ShowName', {
+    Text = 'Show Ore Name',
+    Default = dynamic_client.visuals.show_name,
+    Callback = function(Value)
+        dynamic_client.visuals.show_name = Value
+    end
+})
+
+ore:AddToggle('ShowDistance', {
+    Text = 'Show Distance',
+    Default = dynamic_client.visuals.show_distance,
+    Callback = function(Value)
+        dynamic_client.visuals.show_distance = Value
+    end
+})
+
+ore:AddSlider('OreMaxDistance', {
+    Text = 'Max Distance',
+    Default = dynamic_client.visuals.ore_max_distance,
+    Min = 50,
+    Max = 1500,
+    Rounding = 0,
+    Callback = function(Value)
+        dynamic_client.visuals.ore_max_distance = Value
+    end
+})
+
+ore:AddLabel('Ore Name Color'):AddColorPicker('OreNameColor', {
+    Default = dynamic_client.visuals.colors.ore_name_color,
+    Title = 'Ore Name Color',
+    Callback = function(Value)
+        dynamic_client.visuals.colors.ore_name_color = Value
+        for _, data in pairs(ESPObjects) do
+            data.drawing.Color = Value
+        end
+    end
+})
+Hitbox:AddToggle('HitboxToggle', {
+    Text = 'Enable Hitbox',
+    Default = dynamic_client.combat.hitbox_expander,
+    Tooltip = 'Toggles the head hitbox on/off',
+    Callback = setHitboxEnabled
+})
+
+Hitbox:AddSlider('HitboxSizeX', {
+    Text = 'Head Size X',
+    Default = dynamic_client.combat.hitbox_X,
+    Min = 1,
+    Max = 15,
+    Rounding = 1,
+    Callback = function(Value)
+        dynamic_client.combat.hitbox_X = Value
+    end
+})
+
+Hitbox:AddSlider('HitboxSizeY', {
+    Text = 'Head Size Y',
+    Default = dynamic_client.combat.hitbox_Y,
+    Min = 1,
+    Max = 15,
+    Rounding = 1,
+    Callback = function(Value)
+        dynamic_client.combat.hitbox_Y = Value
+    end
+})
+
+Hitbox:AddSlider('HitboxSizeZ', {
+    Text = 'Head Size Z',
+    Default = dynamic_client.combat.hitbox_Z,
+    Min = 1,
+    Max = 15,
+    Rounding = 1,
+    Callback = function(Value)
+        dynamic_client.combat.hitbox_Z = Value
+    end
+})
+
+Hitbox:AddSlider('HitboxTransparency', {
+    Text = 'Head Transparency',
+    Default = dynamic_client.combat.transparency,
+    Min = 0,
+    Max = 1,
+    Rounding = 0.1,
+    Callback = function(Value)
+        dynamic_client.combat.transparency = Value
+    end
+})
+
+Hitbox:AddToggle('hitbox_bypass', {
+    Text = 'Hitbox Bypass',
+    Default = true,
+    Callback = function(Value)
+        dynamic_client.combat.nbd_bypass = Value
+    end
+})
+Config:AddToggle('show_keybind_ui', {
+    Text = 'Show Keybind UI',
+    Default = false,
+    Callback = function(Value)
+        Library.KeybindFrame.Visible = Value
+    end
+})
+Library:SetWatermarkVisibility(true)
+
+
+local FrameTimer = tick()
+local FrameCounter = 0
+local FPS = 60
+    
+local WatermarkConnection = game:GetService('RunService').RenderStepped:Connect(function()
+    FrameCounter += 1
+    if (tick() - FrameTimer) >= 1 then
+        FPS = FrameCounter
+        FrameTimer = tick()
+        FrameCounter = 0
+    end
+    Library:SetWatermark(('dynamic cilent.xyz paid| %s fps | %s ms'):format(
+        math.floor(FPS),
+        math.floor(game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue())
+    ))
+end)
+
+
+Library.KeybindFrame.Visible = true
+
+
+Library:OnUnload(function()
+    WatermarkConnection:Disconnect()
+    Library.Unloaded = true
+end)
+
+
+Library.ToggleKeybind = Options.MenuKeybind
+
+Config:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'RightShift', NoUI = true, Text = 'Menu keybind' })
+Config:AddButton('Unhook', function() Library:Unload() end)
+    
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
+ThemeManager:SetFolder('dynamic')
+SaveManager:SetFolder('dynamic/Trident')
+SaveManager:BuildConfigSection(Tabs.Config)
+ThemeManager:ApplyToTab(Tabs.Config)
+SaveManager:LoadAutoloadConfig()
